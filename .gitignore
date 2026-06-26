@@ -216,3 +216,19 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# --- Project-specific: generated data + model artifacts (reproducible via the pipeline) ---
+data/
+datamart/
+models/
+reports/
+*.npy
+*.parquet
+*.joblib
+
+# Cruft from earlier setup fixes
+utils.zip
+utils_extracted/
+
+# OS
+.DS_Store

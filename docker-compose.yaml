@@ -1,0 +1,115 @@
+services:
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: harmful_video_postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-pipeline}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-pipeline}
+      POSTGRES_DB: ${POSTGRES_DB:-harmful_video}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-pipeline} -d ${POSTGRES_DB:-harmful_video}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  mlflow:
+    image: python:3.12-slim
+    container_name: harmful_video_mlflow
+    working_dir: /mlflow
+    command:
+      - bash
+      - -c
+      - >-
+        pip install mlflow==2.21.3 psycopg2-binary -q &&
+        mlflow server
+        --host 0.0.0.0
+        --port 5000
+        --backend-store-uri postgresql://${POSTGRES_USER:-pipeline}:${POSTGRES_PASSWORD:-pipeline}@postgres:5432/${MLFLOW_DB:-mlflow_db}
+        --serve-artifacts
+        --artifacts-destination /mlflow/artifacts
+        --default-artifact-root mlflow-artifacts:/
+    ports:
+      - "5000:5000"
+    volumes:
+      - mlflow_artifacts:/mlflow/artifacts
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  pipeline:
+    build: .
+    container_name: harmful_video_pipeline
+    environment:
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      POSTGRES_DSN: postgresql://${POSTGRES_USER:-pipeline}:${POSTGRES_PASSWORD:-pipeline}@postgres:5432/${POSTGRES_DB:-harmful_video}
+      OLLAMA_BASE_URL: http://ollama:11434
+    volumes:
+      - .:/app
+    command: ["python", "main.py"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  airflow:
+    build:
+      context: .
+      dockerfile: Dockerfile.airflow
+    container_name: harmful_video_airflow
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER:-pipeline}:${POSTGRES_PASSWORD:-pipeline}@postgres:5432/${POSTGRES_DB:-harmful_video}
+      AIRFLOW__CORE__FERNET_KEY: ''
+      AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+      AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW_SECRET_KEY:-harmful_video_secret}
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      POSTGRES_DSN: postgresql://${POSTGRES_USER:-pipeline}:${POSTGRES_PASSWORD:-pipeline}@postgres:5432/${POSTGRES_DB:-harmful_video}
+      OLLAMA_BASE_URL: http://ollama:11434
+      PYTHONWARNINGS: "ignore::SyntaxWarning"
+      AIRFLOW__WEBSERVER__WEB_SERVER_WORKER_TIMEOUT: "300"
+      AIRFLOW__WEBSERVER__WORKERS: "2"
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - .:/opt/airflow/project
+      - airflow_logs:/opt/airflow/logs
+    ports:
+      - "8080:8080"
+    command: standalone
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  streamlit:
+    build: .
+    container_name: harmful_video_dashboard
+    environment:
+      PYTHONPATH: /app          # <-- add this line
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      POSTGRES_DSN: postgresql://${POSTGRES_USER:-pipeline}:${POSTGRES_PASSWORD:-pipeline}@postgres:5432/${POSTGRES_DB:-harmful_video}
+      OLLAMA_BASE_URL: http://ollama:11434
+    volumes:
+      - .:/app
+    command: ["streamlit", "run", "src/dashboard/app.py", "--server.port=8501", "--server.address=0.0.0.0"]
+    ports:
+      - "8501:8501"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: harmful_video_ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_models:/root/.ollama
+
+volumes:
+  postgres_data:
+  mlflow_artifacts:
+  airflow_logs:
+  ollama_models:
